@@ -1,15 +1,56 @@
 # JeppQuery
 
-Jeppesen chart API, feeds BetterJepp. Rebuild of [StarNumber12046/Marinvent](https://github.com/StarNumber12046/Marinvent) (DMCA'd, gone) off the leftover exes — all format/DBF work is theirs.
+Local API that serves your Jeppesen terminal charts to chart-viewer apps like BetterJepp. Runs on your own machine, reads the Jeppesen data you already have installed.
 
-Fix: original scanned all 82k charts.dbf rows per request (~17s, client timeout). Now indexed by ICAO at startup, O(1).
+Rebuild of [StarNumber12046/Marinvent](https://github.com/StarNumber12046/Marinvent) (DMCA'd, repo gone) off the leftover exes — all the DBF/charts.bin format reverse-engineering is their work, not mine. This version fixes it being unusably slow (17s+ to load a chart list) and adds a couple missing features.
 
-`server/jeppquery_server.py` — server. `tools/` — dbf.py/checksum.py/pdf_fixup (Marinvent's). `bin/tcl2emf.exe` — TCL→PDF (Marinvent's, Windows only). `legacy/` — original exes + last readme.
+## Requirements
 
-Run: `python tools\tcl_extract.py -x <Charts.bin>` then `python server\jeppquery_server.py` (or `bin\jeppquery-server.exe`). `-port`/`PORT`, `-host`/`HOST`, `-hidden` (no console, logs to `jeppquery.log`).
+- Windows
+- Jeppesen data installed (the usual `C:\ProgramData\Jeppesen\Common\TerminalCharts\` files: charts.dbf, ctypes.dbf, vfrchrts.dbf, Charts.bin, plus fonts)
+- Nothing else — `bin\jeppquery-server.exe` is standalone, no Python/install needed
 
-Endpoints: `/health`, `/api/v1/chart-types`, `/api/v1/charts/{icao}` (`?type=` `?search=`), `/api/v1/charts/{icao}/export/{filename}` (cached PDF render).
+## First time setup
 
-Build exe: `pyinstaller --onefile --console --name jeppquery-server --distpath bin --paths tools server\jeppquery_server.py`. Needed `sys.executable` not `__file__` for path resolution in frozen mode (onefile extracts to temp dir).
+1. Extract your chart data (only needed once, or again after Jeppesen updates):
+   ```
+   python tools\tcl_extract.py -x C:\ProgramData\Jeppesen\Common\TerminalCharts\Charts.bin
+   ```
+   Run this from the repo root — it pulls every chart out of Charts.bin into `TCLs\`.
 
-TODO: georef_tool.exe not ported, airports.dbf not wired up.
+2. Start the server:
+   ```
+   bin\jeppquery-server.exe
+   ```
+   That's it. It listens on `0.0.0.0:8080` by default. Point BetterJepp (or whatever) at `http://localhost:8080`.
+
+## Changing the port
+
+```
+bin\jeppquery-server.exe -port 9000
+```
+or set it once as an environment variable instead: `set PORT=9000`.
+
+Same deal for the bind address with `-host` / `HOST` if you need something other than `0.0.0.0`.
+
+## Running with no console window
+
+```
+bin\jeppquery-server.exe -hidden
+```
+Hides the window (good for autostart / running in the background). Logs go to `jeppquery.log` in the repo root instead of the console. Change the log location with `-log <path>`.
+
+## Updating chart data
+
+Whenever Jeppesen data updates, re-run the extraction step from setup — it's safe to run again, just overwrites `TCLs\`. If chart *rendering* looks stale afterward, delete the `cache\` folder too (it caches rendered PDFs by filename).
+
+## Troubleshooting
+
+- **"Failed to load charts" in the client** — server probably isn't running, or is pointed at the wrong port. Check the console output / log file for errors.
+- **A chart won't render / times out** — first render of any chart takes ~1 second (it's actually drawing the PDF), every render after that is instant from cache. If it never finishes, check that `TCLs\` actually has that chart's file.
+- **Startup says a DBF file is missing** — your Jeppesen paths aren't the defaults. Point at them with `-charts`, `-vfr`, `-types` flags (see `bin\jeppquery-server.exe -h`).
+
+## Not implemented yet
+
+- Georeferencing (`legacy\georef_tool.exe` from the original project hasn't been ported over)
+- Airport info lookups (`airports.dbf` isn't wired up)
