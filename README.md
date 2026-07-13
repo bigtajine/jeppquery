@@ -50,7 +50,12 @@ Whenever Jeppesen data updates, re-run the extraction step from setup — it's s
 - **A chart won't render / times out** — first render of any chart takes ~1 second (it's actually drawing the PDF), every render after that is instant from cache. If it never finishes, check that `TCLs\` actually has that chart's file.
 - **Startup says a DBF file is missing** — your Jeppesen paths aren't the defaults. Point at them with `-charts`, `-vfr`, `-types` flags (see `bin\jeppquery-server.exe -h`).
 
+## Georeferencing (aircraft position on charts)
+
+Wired up via `bin\georef_tool.exe`, which needs `mrvtcl.dll`, `mrvdrv.dll`, and `zlib.dll` sitting next to it in `bin\` — these came from a JeppView for Windows install (`C:\Program Files (x86)\Jeppesen\JeppView for Windows\`), not from Marinvent, since the actual coordinate-conversion math turned out to live in Jeppesen's own DLL rather than anything Marinvent reimplemented. If those three DLLs are missing, `/geo/*` endpoints just report every chart as ungeoreferenced instead of erroring.
+
+Live aircraft position comes from `tools/sim_feed.py` — MSFS (SimConnect) or X-Plane (UDP datarefs), both auto-detected, no config needed beyond having the sim running. `-no-msfs`/`-no-xplane` to disable either.
+
 ## Not implemented yet
 
-- Georeferencing (`legacy\georef_tool.exe` from the original project hasn't been ported over)
 - Airport info lookups (`airports.dbf` isn't wired up)
