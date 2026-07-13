@@ -3,3 +3,7 @@
 /TCLs
 /TCLs
 *.TCL
+/cache
+*.log
+__pycache__/
+*.pyc
