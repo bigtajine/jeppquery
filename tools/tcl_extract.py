@@ -24,27 +24,37 @@ from dbf import DbfField, DbfFile, DbfHeader, DbtFile, DbtHeader
 @dataclass
 class ChartHeader:
     SIZE = 27
-    MAGIC = 0x1000000 + 31
+
+    # Jeppesen bumps the trailing byte of this whenever they touch their tool
+    # (seen 0x100001B, then 0x100001F on the same 27-byte layout with no other
+    # change). Match it like an AOB signature with a wildcard on the low byte
+    # instead of an exact constant, so the extractor doesn't hard-break the
+    # next time they bump it -- only the byte layout actually matters here.
+    SIGNATURE = 0x1000000
+    SIGNATURE_MASK = 0xFFFFFF00
+    DEFAULT_VERSION = 31  # used when building a header from scratch, not read from a file
 
     checksum: int
     num_files: int
     index_offset: int
     db_begin_date: str
+    version: int = DEFAULT_VERSION
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Self:
         db_begin_date: bytes
         checksum, magic, num_files, index_offset, db_begin_date = struct.unpack('<4I11s', data)  # all sizes should be UINT
 
-        if magic != cls.MAGIC:
-            raise ValueError("Invalid file")
+        if magic & cls.SIGNATURE_MASK != cls.SIGNATURE:
+            raise ValueError(f"Invalid file (magic {magic:#x} doesn't match signature {cls.SIGNATURE:#x} & {cls.SIGNATURE_MASK:#x})")
 
-        return cls(checksum, num_files, index_offset, db_begin_date.rstrip(b'\x00').decode())
+        version = magic - cls.SIGNATURE
+        return cls(checksum, num_files, index_offset, db_begin_date.rstrip(b'\x00').decode(), version)
 
     def to_bytes(self) -> bytes:
         return struct.pack(
             '<4I11s',
-            self.checksum, self.MAGIC, self.num_files,
+            self.checksum, self.SIGNATURE + self.version, self.num_files,
             self.index_offset, self.db_begin_date.encode(),
         )
 
