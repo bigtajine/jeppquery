@@ -1,61 +1,53 @@
 # JeppQuery
 
-Local API that serves your Jeppesen terminal charts to chart-viewer apps like BetterJepp. Runs on your own machine, reads the Jeppesen data you already have installed.
+Local API + web viewer for your installed Jeppesen terminal charts. Runs on your own machine, reads the Jeppesen data you already have.
 
-Rebuild of [StarNumber12046/Marinvent](https://github.com/StarNumber12046/Marinvent) (DMCA'd, repo gone) off the leftover exes — all the DBF/charts.bin format reverse-engineering is their work, not mine. This version fixes it being unusably slow (17s+ to load a chart list) and adds a couple missing features.
+Rebuild of [StarNumber12046/Marinvent](https://github.com/StarNumber12046/Marinvent) (DMCA'd, repo gone) off the leftover exes — the DBF/Charts.bin format reverse-engineering is their work. This version fixes it being unusably slow (17s+ per chart list), adds georeferencing, live aircraft position (MSFS/X-Plane), and a full web viewer.
 
 ## Requirements
 
 - Windows
-- Jeppesen data installed (the usual `C:\ProgramData\Jeppesen\Common\TerminalCharts\` files: charts.dbf, ctypes.dbf, vfrchrts.dbf, Charts.bin, plus fonts)
-- Nothing else — `bin\jeppquery-server.exe` is standalone, no Python/install needed
+- Python 3
+- Jeppesen data installed (`C:\ProgramData\Jeppesen\Common\TerminalCharts\`: charts.dbf, ctypes.dbf, vfrchrts.dbf, Charts.bin, fonts)
+- `pip install Python-SimConnect` — only needed for the MSFS position feed (X-Plane and everything else is stdlib-only)
 
-## First time setup
-
-1. Extract your chart data (only needed once, or again after Jeppesen updates):
-   ```
-   python tools\tcl_extract.py -x C:\ProgramData\Jeppesen\Common\TerminalCharts\Charts.bin
-   ```
-   Run this from the repo root — it pulls every chart out of Charts.bin into `TCLs\`.
-
-2. Start the server:
-   ```
-   bin\jeppquery-server.exe
-   ```
-   That's it. It listens on `0.0.0.0:8080` by default. Point BetterJepp (or whatever) at `http://localhost:8080`.
-
-## Changing the port
+## Setup
 
 ```
-bin\jeppquery-server.exe -port 9000
+python tools\tcl_extract.py -x C:\ProgramData\Jeppesen\Common\TerminalCharts\Charts.bin
+python server\jeppquery_server.py
 ```
-or set it once as an environment variable instead: `set PORT=9000`.
 
-Same deal for the bind address with `-host` / `HOST` if you need something other than `0.0.0.0`.
+First command extracts every chart into `TCLs\` (run once, or again after a Jeppesen data update). Second starts the server on `0.0.0.0:8080` — open `http://localhost:8080` for the web viewer, or point BetterJepp at it.
 
-## Running with no console window
+`bin\jeppquery-server.exe` is a PyInstaller build of the same server for running without Python installed, but it's built manually and there's no CI for it — treat it as possibly stale and prefer running from source above until it's rebuilt.
 
-```
-bin\jeppquery-server.exe -hidden
-```
-Hides the window (good for autostart / running in the background). Logs go to `jeppquery.log` in the repo root instead of the console. Change the log location with `-log <path>`.
+## Options
 
-## Updating chart data
+| Flag | Effect |
+|---|---|
+| `-port <n>` | change port (default 8080) |
+| `-host <addr>` | change bind address (default 0.0.0.0) |
+| `-hidden` | no console window, logs to `jeppquery.log` |
+| `-log <path>` | change log file location |
+| `-no-msfs` / `-no-xplane` | disable a position feed |
+| `-charts` / `-vfr` / `-types` / `-airports` / `-tcls` | override default data paths |
 
-Whenever Jeppesen data updates, re-run the extraction step from setup — it's safe to run again, just overwrites `TCLs\`. If chart *rendering* looks stale afterward, delete the `cache\` folder too (it caches rendered PDFs by filename).
+## Georeferencing
+
+Aircraft-on-chart positioning uses `bin\georef_tool.exe`, which needs `mrvtcl.dll`, `mrvdrv.dll`, `zlib.dll` next to it in `bin\` (copied from a JeppView for Windows install — the coordinate math lives in Jeppesen's own DLL, not in Marinvent). Missing DLLs just means every chart reports as ungeoreferenced, not an error.
+
+Not every chart carries georeferencing data — this is upstream Jeppesen data, not a bug. Ground/parking-stand charts are typically ungeoreferenced; SIDs, STARs, and approach plates usually are.
+
+Live position comes from `tools/sim_feed.py` (MSFS SimConnect or X-Plane UDP, auto-detected).
 
 ## Troubleshooting
 
-- **"Failed to load charts" in the client** — server probably isn't running, or is pointed at the wrong port. Check the console output / log file for errors.
-- **A chart won't render / times out** — first render of any chart takes ~1 second (it's actually drawing the PDF), every render after that is instant from cache. If it never finishes, check that `TCLs\` actually has that chart's file.
-- **Startup says a DBF file is missing** — your Jeppesen paths aren't the defaults. Point at them with `-charts`, `-vfr`, `-types` flags (see `bin\jeppquery-server.exe -h`).
+- **"Failed to load charts"** — server isn't running or client is pointed at the wrong port.
+- **Chart won't render** — first render takes ~1s (actual PDF generation), cached after that. If it never finishes, confirm `TCLs\` has that chart's file.
+- **Startup says a DBF is missing** — your Jeppesen install isn't at the default path; point at it with `-charts`/`-vfr`/`-types`.
+- **Stale chart data after a Jeppesen update** — re-run the extract step, then delete `cache\` (rendered PDFs are cached by filename and won't auto-refresh).
 
-## Georeferencing (aircraft position on charts)
+## Not implemented
 
-Wired up via `bin\georef_tool.exe`, which needs `mrvtcl.dll`, `mrvdrv.dll`, and `zlib.dll` sitting next to it in `bin\` — these came from a JeppView for Windows install (`C:\Program Files (x86)\Jeppesen\JeppView for Windows\`), not from Marinvent, since the actual coordinate-conversion math turned out to live in Jeppesen's own DLL rather than anything Marinvent reimplemented. If those three DLLs are missing, `/geo/*` endpoints just report every chart as ungeoreferenced instead of erroring.
-
-Live aircraft position comes from `tools/sim_feed.py` — MSFS (SimConnect) or X-Plane (UDP datarefs), both auto-detected, no config needed beyond having the sim running. `-no-msfs`/`-no-xplane` to disable either.
-
-## Not implemented yet
-
-- Airport info lookups (`airports.dbf` isn't wired up)
+- Airport info lookups (`airports.dbf` not wired up)
