@@ -21,6 +21,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -790,6 +791,12 @@ class ChartCatalog:
         os.makedirs(self.cache_dir, exist_ok=True)
         self.chart_dims: dict[str, tuple[int, int]] = {}
         self.georef_status_cache: dict[str, dict] = {}
+        # tcl2emf.exe renders via the "Microsoft Print to PDF" printer, whose
+        # output port is shared, system-wide state -- two concurrent render
+        # jobs can race on it, and the loser falls back to PORTPROMPT: and
+        # pops a native "Save Print Output As" dialog that blocks silently
+        # until dismissed. Serialize renders to avoid that race entirely.
+        self._render_lock = threading.Lock()
 
         self._load_types(types_dbf)
         self._load_tcl_names(tcl_dir)
@@ -922,6 +929,19 @@ class ChartCatalog:
         result = self._run_georef_tool(filename, 'pixel2coord', str(x), str(y))
         return result if result else {'latitude': 0, 'longitude': 0, 'error': 'georef unavailable'}
 
+    def _read_cached_pdf(self, filename: str, cache_path: str, dims_path: str) -> bytes | None:
+        """Return the cached PDF's bytes if present, restoring its dims into
+        the in-memory index first (tcl2emf.exe only reports dims on the
+        stdout of an actual render, so a cache hit needs the sidecar)."""
+        if not os.path.exists(cache_path):
+            return None
+        if filename not in self.chart_dims and os.path.exists(dims_path):
+            with open(dims_path, 'r') as fd:
+                w, h = fd.read().split('x')
+                self.chart_dims[filename] = (int(w), int(h))
+        with open(cache_path, 'rb') as fd:
+            return fd.read()
+
     def export_pdf(self, filename: str) -> bytes | None:
         """Render a TCL chart to PDF via tcl2emf.exe, with waypoint-overlay
         cleanup, caching the result on disk since rendering isn't free."""
@@ -929,43 +949,54 @@ class ChartCatalog:
             return None
 
         cache_path = os.path.join(self.cache_dir, f'{filename}.pdf')
-        if os.path.exists(cache_path):
-            with open(cache_path, 'rb') as fd:
-                return fd.read()
+        dims_path = os.path.join(self.cache_dir, f'{filename}.dims')
+        cached = self._read_cached_pdf(filename, cache_path, dims_path)
+        if cached is not None:
+            return cached
 
         tcl_path = os.path.join(self.tcl_dir, f'{filename}.TCL')
         if not os.path.exists(tcl_path):
             return None
 
-        result = subprocess.run(
-            [self.tcl2emf_exe, tcl_path, cache_path],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            print(f"tcl2emf failed for {filename}: rc={result.returncode!r} stdout={result.stdout!r} stderr={result.stderr!r}", file=sys.stderr)
-            return None
+        with self._render_lock:
+            # Re-check: another thread may have rendered this exact chart
+            # while we were waiting for the lock.
+            cached = self._read_cached_pdf(filename, cache_path, dims_path)
+            if cached is not None:
+                return cached
 
-        dims_match = CHART_DIMS_RE.search(result.stdout)
-        if dims_match:
-            self.chart_dims[filename] = (int(dims_match.group(1)), int(dims_match.group(2)))
-
-        # tcl2emf.exe renders via the "Microsoft Print to PDF" printer driver,
-        # which writes the file through the print spooler asynchronously
-        # after the process has already exited.
-        deadline = time.monotonic() + 15
-        while not os.path.exists(cache_path):
-            if time.monotonic() > deadline:
-                print(f"tcl2emf produced no file for {filename} within timeout", file=sys.stderr)
+            result = subprocess.run(
+                [self.tcl2emf_exe, tcl_path, cache_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                print(f"tcl2emf failed for {filename}: rc={result.returncode!r} stdout={result.stdout!r} stderr={result.stderr!r}", file=sys.stderr)
                 return None
-            time.sleep(0.02)
-        # Give the spooler a moment to finish flushing the file handle.
-        prev_size = -1
-        for _ in range(100):
-            size = os.path.getsize(cache_path)
-            if size == prev_size and size > 0:
-                break
-            prev_size = size
-            time.sleep(0.02)
+
+            dims_match = CHART_DIMS_RE.search(result.stdout)
+            if dims_match:
+                w, h = int(dims_match.group(1)), int(dims_match.group(2))
+                self.chart_dims[filename] = (w, h)
+                with open(dims_path, 'w') as fd:
+                    fd.write(f'{w}x{h}')
+
+            # tcl2emf.exe renders via the "Microsoft Print to PDF" printer driver,
+            # which writes the file through the print spooler asynchronously
+            # after the process has already exited.
+            deadline = time.monotonic() + 15
+            while not os.path.exists(cache_path):
+                if time.monotonic() > deadline:
+                    print(f"tcl2emf produced no file for {filename} within timeout", file=sys.stderr)
+                    return None
+                time.sleep(0.02)
+            # Give the spooler a moment to finish flushing the file handle.
+            prev_size = -1
+            for _ in range(100):
+                size = os.path.getsize(cache_path)
+                if size == prev_size and size > 0:
+                    break
+                prev_size = size
+                time.sleep(0.02)
 
         # In-process instead of shelling out: avoids spawning a second
         # interpreter (was also silently broken in the frozen exe, since
