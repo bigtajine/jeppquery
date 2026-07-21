@@ -15,6 +15,7 @@ Examples:
 
 import re
 import sys
+import time
 import zlib
 import shutil
 import argparse
@@ -345,8 +346,18 @@ def process_pdf(pdf_path, dry_run=False):
     shutil.copy2(pdf_path, backup_path)
     print(f"  Backup: {backup_path}")
 
-    with open(pdf_path, "wb") as f:
-        f.write(result)
+    # The print-spooler-backed source file can still be mid-release of its
+    # write handle for a moment after tcl2emf.exe exits and its size
+    # stabilizes, causing a transient PermissionError on Windows.
+    for attempt in range(10):
+        try:
+            with open(pdf_path, "wb") as f:
+                f.write(result)
+            break
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.1)
 
     print(f"  Output: {pdf_path}")
     print(f"  Removed: {len(blocks_to_remove)} blocks")
